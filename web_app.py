@@ -242,6 +242,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <script>
 let lastPlayUrl = '';
 let lastTitle = '';
+let lastAuthor = '';
 let lastDuration = 0;
 let lastSourceUrl = '';
 let transcribeEnabled = TRANSCRIBE_ENABLED;
@@ -272,15 +273,18 @@ async function parse() {
     if (data.success) {
       lastPlayUrl = data.play_url;
       lastTitle = data.title || '未知';
+      lastAuthor = data.author || '';
       lastDuration = data.duration;
       lastSourceUrl = input;
       let transcribeBtn = '';
       if (transcribeEnabled) {
         transcribeBtn = '<div class="result-row"><button class="btn btn-secondary" id="transcribeBtn" onclick="transcribe()">🎤 语音转文字</button></div>';
       }
+      let authorInfo = data.author ? '<div class="result-row"><div class="result-label">作者</div><div class="result-value">'+esc(data.author)+'</div></div>' : '';
       result.className = 'result show success';
       result.innerHTML = `
         <div class="result-row"><div class="result-label">视频标题</div><div class="result-value">${esc(data.title||'未知')}</div></div>
+        ${authorInfo}
         <div class="result-row"><div class="result-label">视频 ID</div><div class="result-value">${esc(data.aweme_id)}</div></div>
         <div class="result-row"><div class="result-label">视频时长</div><div class="result-value">${data.duration}s</div></div>
         <div class="result-row"><div class="result-label">下载地址</div>
@@ -397,7 +401,7 @@ async function saveToFeishu() {
   try {
     const resp = await fetch('/api/save_feishu', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({title: lastTitle, author: '', source_url: lastSourceUrl, duration: lastDuration, text: text}),
+      body: JSON.stringify({title: lastTitle, author: lastAuthor, source_url: lastSourceUrl, duration: lastDuration, text: text}),
       signal: AbortSignal.timeout(90000)
     });
     const data = await resp.json();
@@ -442,7 +446,7 @@ async function sendEmail() {
   try {
     const resp = await fetch('/api/send_email', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({title: lastTitle, author: '', source_url: lastSourceUrl, duration: lastDuration, text: text, to: emailTo}),
+      body: JSON.stringify({title: lastTitle, author: lastAuthor, source_url: lastSourceUrl, duration: lastDuration, text: text, to: emailTo}),
       signal: AbortSignal.timeout(90000)
     });
     const data = await resp.json();
@@ -498,6 +502,7 @@ def api_resolve():
             "play_url": result.video_play_url,
             "duration": round(result.duration_seconds, 1),
             "title": result.title or "",
+            "author": result.author or "",
         })
     else:
         return jsonify({"success": False, "error": "解析失败，请检查链接是否有效"})
@@ -577,6 +582,7 @@ def api_save_feishu():
     # AI 处理：纠错 + 摘要
     final_text = text
     summary = ""
+    title = data.get("title", "").strip()
     ai = get_ai_processor()
     if ai:
         ai_result = ai.process(text)
@@ -585,9 +591,17 @@ def api_save_feishu():
             summary = ai_result.summary
         else:
             logging.warning(f"AI 处理失败，使用原始文字: {ai_result.error}")
+        # 标题为空或"未知"时，AI 自动生成
+        if (not title or title == "未知") and ai:
+            generated = ai.generate_title(final_text)
+            if generated:
+                title = generated
+
+    if not title:
+        title = "未知视频"
 
     result = client.save_transcript(
-        title=data.get("title", "未知视频"),
+        title=title,
         author=data.get("author", ""),
         source_url=data.get("source_url", ""),
         duration=data.get("duration", 0),
@@ -619,6 +633,7 @@ def api_send_email():
     # AI 处理：纠错 + 摘要
     final_text = text
     summary = ""
+    title = data.get("title", "").strip()
     ai = get_ai_processor()
     if ai:
         ai_result = ai.process(text)
@@ -627,10 +642,18 @@ def api_send_email():
             summary = ai_result.summary
         else:
             logging.warning(f"AI 处理失败，使用原始文字: {ai_result.error}")
+        # 标题为空或"未知"时，AI 自动生成
+        if (not title or title == "未知") and ai:
+            generated = ai.generate_title(final_text)
+            if generated:
+                title = generated
+
+    if not title:
+        title = "未知视频"
 
     result = sender.send_transcript(
         to_addr=to_addr,
-        title=data.get("title", "未知视频"),
+        title=title,
         author=data.get("author", ""),
         source_url=data.get("source_url", ""),
         duration=data.get("duration", 0),

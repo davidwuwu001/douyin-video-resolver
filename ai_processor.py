@@ -57,6 +57,34 @@ class AIProcessor:
             raise RuntimeError(f"API 返回异常: {data.get('error', data)}")
         return data["choices"][0]["message"]["content"].strip()
 
+    def generate_title(self, text: str) -> str:
+        """根据文字内容自动生成一个简短标题
+
+        Args:
+            text: 文字内容
+
+        Returns:
+            生成的标题，失败返回空字符串
+        """
+        try:
+            title = self._call(
+                system_prompt=(
+                    "你是一个标题生成助手。"
+                    "请根据以下文字内容，生成一个简洁、准确的中文标题。"
+                    "标题要求：10-25个字，概括核心主题，不要加书名号或引号。"
+                    "直接输出标题，不要添加任何说明。"
+                ),
+                user_content=text[:2000],  # 取前2000字足够判断主题
+                max_tokens=100,
+            )
+            # 清理可能的引号
+            title = title.strip().strip('"\'""''《》【】')
+            logger.info(f"AI 生成标题: {title}")
+            return title
+        except Exception as e:
+            logger.error(f"AI 生成标题失败: {e}")
+            return ""
+
     def process(self, raw_text: str) -> AIProcessResult:
         """对转写文字做纠错 + 摘要
 

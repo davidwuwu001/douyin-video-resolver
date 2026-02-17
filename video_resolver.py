@@ -192,6 +192,14 @@ class VideoResolver:
             video_uri = item.get("video", {}).get("play_addr", {}).get("uri", "")
             duration_ms = item.get("video", {}).get("duration", 0)
 
+            # 提取视频标题（desc）和作者昵称
+            desc = item.get("desc", "").strip()
+            author_nickname = item.get("author", {}).get("nickname", "").strip()
+            if desc and not video.title:
+                video.title = desc
+            if author_nickname and not video.author:
+                video.author = author_nickname
+
             if video_uri:
                 if "mp3" not in video_uri:
                     video.video_play_url = _PLAY_URL_TEMPLATE.format(video_id=video_uri)
@@ -199,7 +207,7 @@ class VideoResolver:
                     video.video_play_url = video_uri
                 video.duration_seconds = duration_ms / 1000.0
                 logger.info(
-                    f"解析成功: {video.title} | "
+                    f"解析成功: {video.title} | 作者: {video.author} | "
                     f"{video.duration_seconds:.1f}s | {video_uri}"
                 )
             else:

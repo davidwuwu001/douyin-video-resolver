@@ -18,6 +18,7 @@ class VideoRecord:
     aweme_id: str = ""
     video_play_url: str = ""
     duration_seconds: float = 0.0
+    author: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -29,6 +30,7 @@ class VideoRecord:
             "aweme_id": self.aweme_id,
             "video_play_url": self.video_play_url,
             "duration_seconds": self.duration_seconds,
+            "author": self.author,
         }
 
     @classmethod
@@ -42,6 +44,7 @@ class VideoRecord:
             aweme_id=data.get("aweme_id", ""),
             video_play_url=data.get("video_play_url", ""),
             duration_seconds=data.get("duration_seconds", 0.0),
+            author=data.get("author", ""),
         )
 
 
