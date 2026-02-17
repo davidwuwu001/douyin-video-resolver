@@ -64,6 +64,33 @@ class FeishuClient:
             "Content-Type": "application/json",
         }
 
+    def _set_doc_permission(self, doc_token: str):
+        """设置文档权限：组织内任何人可编辑
+
+        通过设置 link_share_entity 让组织内成员可以通过链接直接编辑文档。
+        """
+        try:
+            resp = requests.patch(
+                f"{_BASE}/drive/v1/permissions/{doc_token}/public",
+                headers=self._headers(),
+                params={"type": "docx"},
+                json={
+                    "external_access_entity": "open",
+                    "security_entity": "anyone_can_view",
+                    "comment_entity": "anyone_can_view",
+                    "share_entity": "anyone",
+                    "link_share_entity": "tenant_editable",
+                },
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.warning(f"设置文档权限失败: {data.get('msg')} (不影响文档创建)")
+            else:
+                logger.info(f"文档权限已设置为组织内可编辑")
+        except Exception as e:
+            logger.warning(f"设置文档权限异常: {e} (不影响文档创建)")
+
     def save_transcript(
         self,
         title: str,
@@ -71,6 +98,7 @@ class FeishuClient:
         source_url: str,
         duration: float,
         text: str,
+        summary: str = "",
     ) -> FeishuDocResult:
         """将转写文字稿保存为飞书文档
 
@@ -79,7 +107,8 @@ class FeishuClient:
             author: 作者/博主名
             source_url: 视频来源链接
             duration: 视频时长（秒）
-            text: 转写文字内容
+            text: 转写文字内容（纠错后的）
+            summary: AI 生成的摘要（可选）
         """
         now = time.strftime("%Y-%m-%d %H:%M")
         doc_title = f"[{now[:10]}] {title} - {author}" if author else f"[{now[:10]}] {title}"
@@ -102,16 +131,11 @@ class FeishuClient:
             doc_id = document["document_id"]
             doc_url = f"https://my.feishu.cn/docx/{doc_id}"
 
-            # 2. 获取文档根 block ID
-            block_resp = requests.get(
-                f"{_BASE}/docx/v1/documents/{doc_id}/blocks/{doc_id}",
-                headers=self._headers(),
-                timeout=10,
-            )
-            # 根 block 的 children 里第一个是默认的空段落，我们往根 block 下追加内容
+            # 2. 设置文档权限（组织内可编辑）
+            self._set_doc_permission(doc_id)
 
-            # 3. 写入元信息 + 正文
-            blocks = self._build_blocks(title, author, now, source_url, duration, text)
+            # 3. 写入元信息 + 摘要 + 正文
+            blocks = self._build_blocks(title, author, now, source_url, duration, text, summary)
 
             create_resp = requests.post(
                 f"{_BASE}/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
@@ -133,7 +157,7 @@ class FeishuClient:
             return FeishuDocResult(success=False, error=f"网络请求失败: {e}")
 
     @staticmethod
-    def _build_blocks(title, author, time_str, source_url, duration, text):
+    def _build_blocks(title, author, time_str, source_url, duration, text, summary=""):
         """构建飞书文档 block 列表"""
 
         def text_block(content: str) -> dict:
@@ -146,26 +170,43 @@ class FeishuClient:
                 },
             }
 
+        def bold_text_block(label: str, content: str) -> dict:
+            """创建带粗体标签的文本 block"""
+            return {
+                "block_type": 2,
+                "text": {
+                    "elements": [
+                        {"text_run": {"content": label, "text_element_style": {"bold": True}}},
+                        {"text_run": {"content": content}},
+                    ],
+                    "style": {},
+                },
+            }
+
         def divider_block() -> dict:
             return {"block_type": 22, "divider": {}}
 
         blocks = []
 
         # 元信息区域
-        meta_lines = [
-            f"作者：{author}" if author else "作者：未知",
-            f"时间：{time_str}",
-            f"来源：{source_url}",
-            f"时长：{duration:.1f}s",
-        ]
-        for line in meta_lines:
-            blocks.append(text_block(line))
+        blocks.append(bold_text_block("作者：", author if author else "未知"))
+        blocks.append(bold_text_block("时间：", time_str))
+        blocks.append(bold_text_block("来源：", source_url))
+        blocks.append(bold_text_block("时长：", f"{duration:.1f}s"))
+
+        # 摘要区域
+        if summary:
+            blocks.append(divider_block())
+            blocks.append(bold_text_block("📋 内容摘要", ""))
+            for line in summary.split("\n"):
+                if line.strip():
+                    blocks.append(text_block(line.strip()))
 
         # 分割线
         blocks.append(divider_block())
+        blocks.append(bold_text_block("📝 完整文字稿", ""))
 
         # 正文
-        # 飞书单个 text_run 有长度限制，按段落拆分
         paragraphs = text.split("\n") if "\n" in text else [text]
         for p in paragraphs:
             if p.strip():

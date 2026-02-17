@@ -50,6 +50,19 @@ def get_feishu_client():
         )
     return _feishu_client
 
+# 按需初始化 AI 处理器
+_ai_processor = None
+
+def get_ai_processor():
+    global _ai_processor
+    if _ai_processor is None and Config.is_ai_enabled():
+        from ai_processor import AIProcessor
+        _ai_processor = AIProcessor(
+            api_key=Config.ARK_API_KEY,
+            model=Config.ARK_MODEL,
+        )
+    return _ai_processor
+
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -286,13 +299,13 @@ async function transcribe() {
           saveBtn.id = 'saveFeishuBtn';
           saveBtn.className = 'btn btn-secondary';
           saveBtn.style.marginTop = '10px';
-          saveBtn.textContent = '📝 存入飞书知识库';
+          saveBtn.textContent = '📝 AI润色并存入飞书';
           saveBtn.onclick = saveToFeishu;
           tBox.appendChild(saveBtn);
         }
         saveBtn.style.display = 'block';
         saveBtn.disabled = false;
-        saveBtn.textContent = '📝 存入飞书知识库';
+        saveBtn.textContent = '📝 AI润色并存入飞书';
       }
     } else {
       btn.textContent = '❌ 转写失败';
@@ -342,12 +355,12 @@ async function saveToFeishu() {
   const text = document.getElementById('transcriptText').textContent;
   if (!text) return;
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>保存中...';
+  btn.innerHTML = '<span class="spinner"></span>AI处理+保存中...';
   try {
     const resp = await fetch('/api/save_feishu', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({title: lastTitle, author: '', source_url: lastSourceUrl, duration: lastDuration, text: text}),
-      signal: AbortSignal.timeout(30000)
+      signal: AbortSignal.timeout(90000)
     });
     const data = await resp.json();
     if (data.success) {
@@ -364,7 +377,7 @@ async function saveToFeishu() {
       alert('保存失败: ' + data.error);
     }
   } catch(e) {
-    btn.textContent = '📝 存入飞书知识库'; btn.disabled = false;
+    btn.textContent = '📝 AI润色并存入飞书'; btn.disabled = false;
     alert('请求失败: ' + e.message);
   }
 }
@@ -468,7 +481,7 @@ def api_download():
 
 @app.route("/api/save_feishu", methods=["POST"])
 def api_save_feishu():
-    """保存转写文字到飞书文档"""
+    """保存转写文字到飞书文档（含 AI 纠错+摘要）"""
     client = get_feishu_client()
     if not client:
         return jsonify({"success": False, "error": "飞书功能未配置"})
@@ -478,12 +491,25 @@ def api_save_feishu():
     if not text:
         return jsonify({"success": False, "error": "没有可保存的文字内容"})
 
+    # AI 处理：纠错 + 摘要
+    final_text = text
+    summary = ""
+    ai = get_ai_processor()
+    if ai:
+        ai_result = ai.process(text)
+        if ai_result.success:
+            final_text = ai_result.corrected_text
+            summary = ai_result.summary
+        else:
+            logging.warning(f"AI 处理失败，使用原始文字: {ai_result.error}")
+
     result = client.save_transcript(
         title=data.get("title", "未知视频"),
         author=data.get("author", ""),
         source_url=data.get("source_url", ""),
         duration=data.get("duration", 0),
-        text=text,
+        text=final_text,
+        summary=summary,
     )
 
     if result.success:
@@ -504,5 +530,9 @@ if __name__ == "__main__":
         print(f"   ✅ 飞书知识库: 已启用")
     else:
         print(f"   ⚠️  飞书知识库: 未配置 (设置 FEISHU_APP_ID + FEISHU_APP_SECRET + FEISHU_FOLDER_TOKEN 启用)")
+    if Config.is_ai_enabled():
+        print(f"   ✅ AI 润色: 已启用 (模型: {Config.ARK_MODEL})")
+    else:
+        print(f"   ⚠️  AI 润色: 未配置 (设置 ARK_API_KEY 启用)")
     print()
     app.run(host="0.0.0.0", port=port, debug=False)

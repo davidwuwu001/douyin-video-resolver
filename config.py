@@ -18,6 +18,10 @@ class Config:
     FEISHU_APP_SECRET: str = os.environ.get("FEISHU_APP_SECRET", "")
     FEISHU_FOLDER_TOKEN: str = os.environ.get("FEISHU_FOLDER_TOKEN", "")
 
+    # 火山方舟（豆包大模型）
+    ARK_API_KEY: str = os.environ.get("ARK_API_KEY", "")
+    ARK_MODEL: str = os.environ.get("ARK_MODEL", "doubao-seed-2-0-mini-260215")
+
     @classmethod
     def is_transcribe_enabled(cls) -> bool:
         """转写功能是否已配置"""
@@ -27,3 +31,8 @@ class Config:
     def is_feishu_enabled(cls) -> bool:
         """飞书存储功能是否已配置"""
         return bool(cls.FEISHU_APP_ID and cls.FEISHU_APP_SECRET and cls.FEISHU_FOLDER_TOKEN)
+
+    @classmethod
+    def is_ai_enabled(cls) -> bool:
+        """AI 处理功能是否已配置"""
+        return bool(cls.ARK_API_KEY)
