@@ -13,12 +13,17 @@ class Config:
     VOLC_APP_ID: str = os.environ.get("VOLC_APP_ID", "")
     VOLC_ACCESS_TOKEN: str = os.environ.get("VOLC_ACCESS_TOKEN", "")
 
-    # 后续扩展：大模型 API Key、飞书配置等
-    # LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
-    # FEISHU_APP_ID: str = os.environ.get("FEISHU_APP_ID", "")
-    # FEISHU_APP_SECRET: str = os.environ.get("FEISHU_APP_SECRET", "")
+    # 飞书开放平台
+    FEISHU_APP_ID: str = os.environ.get("FEISHU_APP_ID", "")
+    FEISHU_APP_SECRET: str = os.environ.get("FEISHU_APP_SECRET", "")
+    FEISHU_FOLDER_TOKEN: str = os.environ.get("FEISHU_FOLDER_TOKEN", "")
 
     @classmethod
     def is_transcribe_enabled(cls) -> bool:
         """转写功能是否已配置"""
         return bool(cls.VOLC_APP_ID and cls.VOLC_ACCESS_TOKEN)
+
+    @classmethod
+    def is_feishu_enabled(cls) -> bool:
+        """飞书存储功能是否已配置"""
+        return bool(cls.FEISHU_APP_ID and cls.FEISHU_APP_SECRET and cls.FEISHU_FOLDER_TOKEN)

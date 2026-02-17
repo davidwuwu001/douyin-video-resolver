@@ -11,7 +11,8 @@
 import logging
 import os
 
-from flask import Flask, jsonify, request
+import requests
+from flask import Flask, jsonify, request, Response
 
 from video_resolver import VideoResolver, extract_url_from_text, resolve_short_url, extract_aweme_id
 from models import VideoRecord
@@ -34,6 +35,20 @@ def get_transcriber():
             access_token=Config.VOLC_ACCESS_TOKEN,
         )
     return _transcriber
+
+# 按需初始化飞书客户端
+_feishu_client = None
+
+def get_feishu_client():
+    global _feishu_client
+    if _feishu_client is None and Config.is_feishu_enabled():
+        from feishu_client import FeishuClient
+        _feishu_client = FeishuClient(
+            app_id=Config.FEISHU_APP_ID,
+            app_secret=Config.FEISHU_APP_SECRET,
+            folder_token=Config.FEISHU_FOLDER_TOKEN,
+        )
+    return _feishu_client
 
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -187,7 +202,11 @@ HTML_PAGE = """<!DOCTYPE html>
 </div>
 <script>
 let lastPlayUrl = '';
+let lastTitle = '';
+let lastDuration = 0;
+let lastSourceUrl = '';
 let transcribeEnabled = TRANSCRIBE_ENABLED;
+let feishuEnabled = FEISHU_ENABLED;
 
 async function parse() {
   const input = document.getElementById('input').value.trim();
@@ -211,6 +230,9 @@ async function parse() {
     const data = await resp.json();
     if (data.success) {
       lastPlayUrl = data.play_url;
+      lastTitle = data.title || '未知';
+      lastDuration = data.duration;
+      lastSourceUrl = input;
       let transcribeBtn = '';
       if (transcribeEnabled) {
         transcribeBtn = '<div class="result-row"><button class="btn btn-secondary" id="transcribeBtn" onclick="transcribe()">🎤 语音转文字</button></div>';
@@ -222,7 +244,7 @@ async function parse() {
         <div class="result-row"><div class="result-label">视频时长</div><div class="result-value">${data.duration}s</div></div>
         <div class="result-row"><div class="result-label">下载地址</div>
           <div class="result-url"><a href="${esc(data.play_url)}" target="_blank">${esc(data.play_url)}</a>
-          <button class="copy-btn" data-url="${esc(data.play_url)}">复制</button></div></div>
+          <button class="copy-btn" data-url="${esc(data.play_url)}">复制</button><button class="copy-btn" onclick="downloadVideo()">下载</button></div></div>
         ${transcribeBtn}`;
       result.querySelector('.copy-btn').addEventListener('click', function(){copyUrl(this);});
     } else {
@@ -257,6 +279,21 @@ async function transcribe() {
       tBox.className = 'transcript-box show';
       btn.textContent = '✅ 转写完成';
       btn.disabled = true;
+      if (feishuEnabled) {
+        let saveBtn = document.getElementById('saveFeishuBtn');
+        if (!saveBtn) {
+          saveBtn = document.createElement('button');
+          saveBtn.id = 'saveFeishuBtn';
+          saveBtn.className = 'btn btn-secondary';
+          saveBtn.style.marginTop = '10px';
+          saveBtn.textContent = '📝 存入飞书知识库';
+          saveBtn.onclick = saveToFeishu;
+          tBox.appendChild(saveBtn);
+        }
+        saveBtn.style.display = 'block';
+        saveBtn.disabled = false;
+        saveBtn.textContent = '📝 存入飞书知识库';
+      }
     } else {
       btn.textContent = '❌ 转写失败';
       btn.disabled = false;
@@ -295,6 +332,43 @@ function copyTranscript() {
   document.body.removeChild(ta);
 }
 
+function downloadVideo() {
+  if (!lastPlayUrl) return;
+  window.open('/api/download?url=' + encodeURIComponent(lastPlayUrl) + '&title=' + encodeURIComponent(lastTitle), '_blank');
+}
+
+async function saveToFeishu() {
+  const btn = document.getElementById('saveFeishuBtn');
+  const text = document.getElementById('transcriptText').textContent;
+  if (!text) return;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>保存中...';
+  try {
+    const resp = await fetch('/api/save_feishu', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({title: lastTitle, author: '', source_url: lastSourceUrl, duration: lastDuration, text: text}),
+      signal: AbortSignal.timeout(30000)
+    });
+    const data = await resp.json();
+    if (data.success) {
+      btn.innerHTML = '✅ 已保存到飞书';
+      btn.disabled = true;
+      if (data.doc_url) {
+        const link = document.createElement('a');
+        link.href = data.doc_url; link.target = '_blank';
+        link.textContent = '打开文档'; link.style.cssText = 'color:#fe2c55;margin-left:12px;font-size:14px;';
+        btn.parentNode.insertBefore(link, btn.nextSibling);
+      }
+    } else {
+      btn.textContent = '❌ 保存失败'; btn.disabled = false;
+      alert('保存失败: ' + data.error);
+    }
+  } catch(e) {
+    btn.textContent = '📝 存入飞书知识库'; btn.disabled = false;
+    alert('请求失败: ' + e.message);
+  }
+}
+
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 document.getElementById('input').addEventListener('keydown',(e)=>{
   if((e.ctrlKey||e.metaKey)&&e.key==='Enter') parse();
@@ -306,9 +380,10 @@ document.getElementById('input').addEventListener('keydown',(e)=>{
 
 @app.route("/")
 def index():
-    # 动态注入转写功能开关到前端
+    # 动态注入功能开关到前端
     enabled = "true" if Config.is_transcribe_enabled() else "false"
-    page = HTML_PAGE.replace("TRANSCRIBE_ENABLED", enabled)
+    feishu = "true" if Config.is_feishu_enabled() else "false"
+    page = HTML_PAGE.replace("TRANSCRIBE_ENABLED", enabled).replace("FEISHU_ENABLED", feishu)
     return page
 
 
@@ -356,6 +431,67 @@ def api_transcribe():
     })
 
 
+@app.route("/api/download")
+def api_download():
+    """代理下载视频（绕过抖音 Referer 防盗链）"""
+    video_url = request.args.get("url", "").strip()
+    title = request.args.get("title", "video").strip() or "video"
+    if not video_url:
+        return jsonify({"success": False, "error": "缺少 url 参数"}), 400
+
+    import re
+    safe_title = re.sub(r'[^\w\u4e00-\u9fff\-]', '_', title)[:60]
+
+    try:
+        headers = {
+            "user-agent": "Mozilla/5.0 (Linux; Android 8.0.0) AppleWebKit/537.36 Chrome/116.0.0.0 Mobile Safari/537.36",
+            "referer": "https://www.douyin.com/",
+        }
+        upstream = requests.get(video_url, headers=headers, stream=True, timeout=30, allow_redirects=True)
+        if upstream.status_code != 200:
+            return jsonify({"success": False, "error": f"上游返回 {upstream.status_code}"}), 502
+
+        content_type = upstream.headers.get("Content-Type", "video/mp4")
+        content_length = upstream.headers.get("Content-Length", "")
+
+        resp_headers = {
+            "Content-Type": content_type,
+            "Content-Disposition": f'attachment; filename="{safe_title}.mp4"',
+        }
+        if content_length:
+            resp_headers["Content-Length"] = content_length
+
+        return Response(upstream.iter_content(chunk_size=65536), headers=resp_headers)
+    except requests.RequestException as e:
+        return jsonify({"success": False, "error": str(e)}), 502
+
+
+@app.route("/api/save_feishu", methods=["POST"])
+def api_save_feishu():
+    """保存转写文字到飞书文档"""
+    client = get_feishu_client()
+    if not client:
+        return jsonify({"success": False, "error": "飞书功能未配置"})
+
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "").strip()
+    if not text:
+        return jsonify({"success": False, "error": "没有可保存的文字内容"})
+
+    result = client.save_transcript(
+        title=data.get("title", "未知视频"),
+        author=data.get("author", ""),
+        source_url=data.get("source_url", ""),
+        duration=data.get("duration", 0),
+        text=text,
+    )
+
+    if result.success:
+        return jsonify({"success": True, "doc_url": result.doc_url, "doc_title": result.doc_title})
+    else:
+        return jsonify({"success": False, "error": result.error})
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"\n🎬 抖音视频解析服务已启动")
@@ -364,5 +500,9 @@ if __name__ == "__main__":
         print(f"   ✅ 语音转文字: 已启用")
     else:
         print(f"   ⚠️  语音转文字: 未配置 (设置 VOLC_APP_ID + VOLC_ACCESS_TOKEN 启用)")
+    if Config.is_feishu_enabled():
+        print(f"   ✅ 飞书知识库: 已启用")
+    else:
+        print(f"   ⚠️  飞书知识库: 未配置 (设置 FEISHU_APP_ID + FEISHU_APP_SECRET + FEISHU_FOLDER_TOKEN 启用)")
     print()
     app.run(host="0.0.0.0", port=port, debug=False)
