@@ -276,6 +276,11 @@ async function parse() {
       lastAuthor = data.author || '';
       lastDuration = data.duration;
       lastSourceUrl = input;
+      
+      // 构建真实的下载地址
+      const downloadUrl = '/api/download?url=' + encodeURIComponent(data.play_url) + '&title=' + encodeURIComponent(lastTitle);
+      const fullDownloadUrl = window.location.origin + downloadUrl;
+      
       let transcribeBtn = '';
       if (transcribeEnabled) {
         transcribeBtn = '<div class="result-row"><button class="btn btn-secondary" id="transcribeBtn" onclick="transcribe()">🎤 语音转文字</button></div>';
@@ -288,8 +293,8 @@ async function parse() {
         <div class="result-row"><div class="result-label">视频 ID</div><div class="result-value">${esc(data.aweme_id)}</div></div>
         <div class="result-row"><div class="result-label">视频时长</div><div class="result-value">${data.duration}s</div></div>
         <div class="result-row"><div class="result-label">下载地址</div>
-          <div class="result-url"><a href="${esc(data.play_url)}" target="_blank">${esc(data.play_url)}</a>
-          <button class="copy-btn" data-url="${esc(data.play_url)}">复制</button><button class="copy-btn" onclick="downloadVideo()">下载</button></div></div>
+          <div class="result-url"><a href="${esc(downloadUrl)}" target="_blank">${esc(fullDownloadUrl)}</a>
+          <button class="copy-btn" data-url="${esc(fullDownloadUrl)}">复制</button><button class="copy-btn" onclick="downloadVideo()">下载</button></div></div>
         ${transcribeBtn}`;
       result.querySelector('.copy-btn').addEventListener('click', function(){copyUrl(this);});
     } else {
@@ -520,7 +525,12 @@ def api_transcribe():
     if not audio_url:
         return jsonify({"success": False, "error": "请提供音频 URL"})
 
-    result = transcriber.transcribe(audio_url)
+    # 使用本地代理地址，绕过抖音防盗链
+    # 火山引擎会通过我们的服务器下载视频
+    proxy_url = f"http://127.0.0.1:3101/api/download?url={audio_url}"
+    logging.info(f"使用代理地址进行转写: {proxy_url}")
+    
+    result = transcriber.transcribe(proxy_url)
     if result.error:
         return jsonify({"success": False, "error": result.error})
 
@@ -541,7 +551,11 @@ def api_download():
         return jsonify({"success": False, "error": "缺少 url 参数"}), 400
 
     import re
+    from urllib.parse import quote
+    # 清理文件名，只保留中文、英文、数字、下划线和连字符
     safe_title = re.sub(r'[^\w\u4e00-\u9fff\-]', '_', title)[:60]
+    # URL 编码文件名，支持中文
+    encoded_title = quote(safe_title)
 
     try:
         headers = {
@@ -557,7 +571,7 @@ def api_download():
 
         resp_headers = {
             "Content-Type": content_type,
-            "Content-Disposition": f'attachment; filename="{safe_title}.mp4"',
+            "Content-Disposition": f'attachment; filename="{encoded_title}.mp4"; filename*=UTF-8\'\'{encoded_title}.mp4',
         }
         if content_length:
             resp_headers["Content-Length"] = content_length
