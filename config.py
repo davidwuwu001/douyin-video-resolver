@@ -22,6 +22,13 @@ class Config:
     ARK_API_KEY: str = os.environ.get("ARK_API_KEY", "")
     ARK_MODEL: str = os.environ.get("ARK_MODEL", "doubao-seed-2-0-mini-260215")
 
+    # 邮件发送 (SMTP)
+    SMTP_HOST: str = os.environ.get("ALERT_SMTP_HOST", "").strip('"')
+    SMTP_PORT: int = int(os.environ.get("ALERT_SMTP_PORT", "465").strip('"'))
+    SMTP_USER: str = os.environ.get("ALERT_SMTP_USER", "").strip('"')
+    SMTP_PASS: str = os.environ.get("ALERT_SMTP_PASS", "").strip('"')
+    EMAIL_TO: str = os.environ.get("ALERT_EMAIL_TO", "").strip('"')
+
     @classmethod
     def is_transcribe_enabled(cls) -> bool:
         """转写功能是否已配置"""
@@ -36,3 +43,8 @@ class Config:
     def is_ai_enabled(cls) -> bool:
         """AI 处理功能是否已配置"""
         return bool(cls.ARK_API_KEY)
+
+    @classmethod
+    def is_email_enabled(cls) -> bool:
+        """邮件发送功能是否已配置"""
+        return bool(cls.SMTP_HOST and cls.SMTP_USER and cls.SMTP_PASS)

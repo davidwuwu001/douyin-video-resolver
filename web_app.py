@@ -63,6 +63,21 @@ def get_ai_processor():
         )
     return _ai_processor
 
+# 按需初始化邮件发送器
+_email_sender = None
+
+def get_email_sender():
+    global _email_sender
+    if _email_sender is None and Config.is_email_enabled():
+        from email_sender import EmailSender
+        _email_sender = EmailSender(
+            host=Config.SMTP_HOST,
+            port=Config.SMTP_PORT,
+            user=Config.SMTP_USER,
+            password=Config.SMTP_PASS,
+        )
+    return _email_sender
+
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -198,6 +213,17 @@ HTML_PAGE = """<!DOCTYPE html>
     vertical-align: middle; margin-right: 8px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .email-row {
+    display: flex; gap: 8px; margin-top: 10px; align-items: center;
+  }
+  .email-row input {
+    flex: 1; padding: 10px 12px; border: 1px solid #444; border-radius: 8px;
+    background: #1a1a1a; color: #e0e0e0; font-size: 14px; outline: none;
+  }
+  .email-row input:focus { border-color: #fe2c55; }
+  .email-row button { white-space: nowrap; width: auto; padding: 10px 16px; margin-top: 0; }
+  .action-btns { display: flex; gap: 8px; margin-top: 10px; }
+  .action-btns .btn { flex: 1; }
 </style>
 </head>
 <body>
@@ -220,6 +246,8 @@ let lastDuration = 0;
 let lastSourceUrl = '';
 let transcribeEnabled = TRANSCRIBE_ENABLED;
 let feishuEnabled = FEISHU_ENABLED;
+let emailEnabled = EMAIL_ENABLED;
+let defaultEmailTo = 'DEFAULT_EMAIL_TO';
 
 async function parse() {
   const input = document.getElementById('input').value.trim();
@@ -292,20 +320,30 @@ async function transcribe() {
       tBox.className = 'transcript-box show';
       btn.textContent = '✅ 转写完成';
       btn.disabled = true;
+      // 操作按钮区域
+      let actionsDiv = document.getElementById('actionBtns');
+      if (!actionsDiv) {
+        actionsDiv = document.createElement('div');
+        actionsDiv.id = 'actionBtns';
+        actionsDiv.className = 'action-btns';
+        tBox.appendChild(actionsDiv);
+      }
+      actionsDiv.innerHTML = '';
       if (feishuEnabled) {
-        let saveBtn = document.getElementById('saveFeishuBtn');
-        if (!saveBtn) {
-          saveBtn = document.createElement('button');
-          saveBtn.id = 'saveFeishuBtn';
-          saveBtn.className = 'btn btn-secondary';
-          saveBtn.style.marginTop = '10px';
-          saveBtn.textContent = '📝 AI润色并存入飞书';
-          saveBtn.onclick = saveToFeishu;
-          tBox.appendChild(saveBtn);
-        }
-        saveBtn.style.display = 'block';
-        saveBtn.disabled = false;
+        const saveBtn = document.createElement('button');
+        saveBtn.id = 'saveFeishuBtn';
+        saveBtn.className = 'btn btn-secondary';
         saveBtn.textContent = '📝 AI润色并存入飞书';
+        saveBtn.onclick = saveToFeishu;
+        actionsDiv.appendChild(saveBtn);
+      }
+      if (emailEnabled) {
+        const emailBtn = document.createElement('button');
+        emailBtn.id = 'sendEmailBtn';
+        emailBtn.className = 'btn btn-secondary';
+        emailBtn.textContent = '📧 AI润色并发送邮件';
+        emailBtn.onclick = showEmailInput;
+        actionsDiv.appendChild(emailBtn);
       }
     } else {
       btn.textContent = '❌ 转写失败';
@@ -382,6 +420,45 @@ async function saveToFeishu() {
   }
 }
 
+function showEmailInput() {
+  let row = document.getElementById('emailRow');
+  if (row) { row.style.display = 'flex'; return; }
+  row = document.createElement('div');
+  row.id = 'emailRow';
+  row.className = 'email-row';
+  row.innerHTML = '<input type="email" id="emailTo" value="'+esc(defaultEmailTo)+'" placeholder="收件人邮箱">'
+    + '<button class="btn btn-secondary" id="emailSendBtn" onclick="sendEmail()">发送</button>';
+  document.getElementById('transcriptBox').appendChild(row);
+}
+
+async function sendEmail() {
+  const emailTo = document.getElementById('emailTo').value.trim();
+  if (!emailTo) { alert('请输入收件人邮箱'); return; }
+  const text = document.getElementById('transcriptText').textContent;
+  if (!text) return;
+  const btn = document.getElementById('emailSendBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>AI处理+发送中...';
+  try {
+    const resp = await fetch('/api/send_email', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({title: lastTitle, author: '', source_url: lastSourceUrl, duration: lastDuration, text: text, to: emailTo}),
+      signal: AbortSignal.timeout(90000)
+    });
+    const data = await resp.json();
+    if (data.success) {
+      btn.innerHTML = '✅ 已发送';
+      btn.disabled = true;
+    } else {
+      btn.textContent = '发送'; btn.disabled = false;
+      alert('发送失败: ' + data.error);
+    }
+  } catch(e) {
+    btn.textContent = '发送'; btn.disabled = false;
+    alert('请求失败: ' + e.message);
+  }
+}
+
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 document.getElementById('input').addEventListener('keydown',(e)=>{
   if((e.ctrlKey||e.metaKey)&&e.key==='Enter') parse();
@@ -396,7 +473,13 @@ def index():
     # 动态注入功能开关到前端
     enabled = "true" if Config.is_transcribe_enabled() else "false"
     feishu = "true" if Config.is_feishu_enabled() else "false"
-    page = HTML_PAGE.replace("TRANSCRIBE_ENABLED", enabled).replace("FEISHU_ENABLED", feishu)
+    email = "true" if Config.is_email_enabled() else "false"
+    email_to = Config.EMAIL_TO or ""
+    page = (HTML_PAGE
+        .replace("TRANSCRIBE_ENABLED", enabled)
+        .replace("FEISHU_ENABLED", feishu)
+        .replace("EMAIL_ENABLED", email)
+        .replace("DEFAULT_EMAIL_TO", email_to))
     return page
 
 
@@ -518,6 +601,49 @@ def api_save_feishu():
         return jsonify({"success": False, "error": result.error})
 
 
+@app.route("/api/send_email", methods=["POST"])
+def api_send_email():
+    """AI 润色后发送邮件"""
+    sender = get_email_sender()
+    if not sender:
+        return jsonify({"success": False, "error": "邮件功能未配置"})
+
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "").strip()
+    to_addr = data.get("to", "").strip()
+    if not text:
+        return jsonify({"success": False, "error": "没有可发送的文字内容"})
+    if not to_addr:
+        return jsonify({"success": False, "error": "请提供收件人邮箱"})
+
+    # AI 处理：纠错 + 摘要
+    final_text = text
+    summary = ""
+    ai = get_ai_processor()
+    if ai:
+        ai_result = ai.process(text)
+        if ai_result.success:
+            final_text = ai_result.corrected_text
+            summary = ai_result.summary
+        else:
+            logging.warning(f"AI 处理失败，使用原始文字: {ai_result.error}")
+
+    result = sender.send_transcript(
+        to_addr=to_addr,
+        title=data.get("title", "未知视频"),
+        author=data.get("author", ""),
+        source_url=data.get("source_url", ""),
+        duration=data.get("duration", 0),
+        text=final_text,
+        summary=summary,
+    )
+
+    if result.success:
+        return jsonify({"success": True})
+    else:
+        return jsonify({"success": False, "error": result.error})
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print(f"\n🎬 抖音视频解析服务已启动")
@@ -534,5 +660,9 @@ if __name__ == "__main__":
         print(f"   ✅ AI 润色: 已启用 (模型: {Config.ARK_MODEL})")
     else:
         print(f"   ⚠️  AI 润色: 未配置 (设置 ARK_API_KEY 启用)")
+    if Config.is_email_enabled():
+        print(f"   ✅ 邮件发送: 已启用 ({Config.SMTP_USER})")
+    else:
+        print(f"   ⚠️  邮件发送: 未配置 (设置 ALERT_SMTP_* 启用)")
     print()
     app.run(host="0.0.0.0", port=port, debug=False)
